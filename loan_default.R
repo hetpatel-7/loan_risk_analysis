@@ -147,3 +147,212 @@ corrplot(corr_matrix,
          diag = FALSE,                  # Hide the diagonal line
          title = "Correlation Heatmap",
          mar = c(0,0,1,0))
+
+# ==============================================================================
+# 3. ASSOCIATION RULE MINING (Why do people default?)
+# ==============================================================================
+
+# Step 1: Discretization (Binning)
+# Convert numbers (Income, Score) into categories (High, Low)
+df_arules <- df %>%
+  mutate(
+    Income_Group = discretize(annual_income, method = "frequency", categories = 3, labels = c("Low", "Medium", "High")),
+    Credit_Group = discretize(credit_score, method = "frequency", categories = 3, labels = c("Poor", "Fair", "Good")),
+    DTI_Group = discretize(debt_to_income_ratio, method = "frequency", categories = 3, labels = c("Low_Risk", "Med_Risk", "High_Risk"))
+  ) %>%
+  select(education_level, employment_status, Income_Group, Credit_Group, DTI_Group, loan_paid_back)
+
+# --- Helper Function to Print Range Values Nicely ---
+print_nice_ranges <- function(column_name, labels, decimals = 0) {
+  breaks <- attr(df_arules[[column_name]], "discretized:breaks")
+  cat(paste0("\n--- Ranges for ", column_name, " ---\n"))
+  for(i in 1:length(labels)) {
+    start <- format(round(breaks[i], decimals), big.mark=",", scientific=FALSE, nsmall=decimals)
+    end   <- format(round(breaks[i+1], decimals), big.mark=",", scientific=FALSE, nsmall=decimals)
+    cat(sprintf("%-10s: %s to %s\n", labels[i], start, end))
+  }
+}
+
+# Print the exact dollar/score ranges for your report
+print_nice_ranges("Income_Group", c("Low", "Medium", "High"), decimals=0)
+print_nice_ranges("Credit_Group", c("Poor", "Fair", "Good"), decimals=0)
+print_nice_ranges("DTI_Group", c("Low_Risk", "Med_Risk", "High_Risk"), decimals=2)
+
+# Step 2: Run Apriori Algorithm
+trans <- as(df_arules, "transactions")
+
+# Example 1: General Rules
+# Finding frequent patterns with at least 10% support and 50% confidence
+rules_general <- apriori(trans, parameter = list(supp = 0.1, conf = 0.5, minlen=2))
+cat("\n--- General Association Rules ---\n")
+inspect(head(sort(rules_general, by = "lift"), 5))
+
+# Example 2: Rules Specific to DEFAULTS
+# "What conditions strongly imply a Default?"
+# Corrected Rule Mining for Defaults
+rules_default <- apriori(trans, 
+                         parameter = list(supp = 0.01, conf = 0.1, minlen=2),
+                         appearance = list(default = "lhs", rhs = "loan_paid_back=Default"))
+
+cat("\n--- Rules Predicting Default ---\n")
+inspect(head(sort(rules_default, by = "lift"), 5))
+
+# ==============================================================================
+# 4. CLASSIFICATION (Predicting Loan Status)
+# ==============================================================================
+
+# WHY: To build a model that can predict the probability of default for a NEW applicant.
+
+# Step 1: Split Data (70% Train, 30% Test)
+set.seed(123)
+trainIndex <- createDataPartition(df$loan_paid_back, p = 0.7, list = FALSE)
+train_data <- df[trainIndex, ]
+test_data <- df[-trainIndex, ]
+
+# --- Method A: Logistic Regression ---
+# Why: Highly interpretable. Gives us the "Odds Ratio" of default.
+# We predict 'loan_paid_back' using Credit Score, Income, DTI, and Loan Term
+model_glm <- glm(loan_paid_back ~ credit_score + annual_income + debt_to_income_ratio + loan_term, 
+                 data = train_data, family = "binomial")
+
+# Predict on Test Data
+prob_glm <- predict(model_glm, test_data, type = "response")
+pred_glm <- ifelse(prob_glm > 0.65, "Paid", "Default")
+pred_glm <- factor(pred_glm, levels = c("Default", "Paid"))
+
+cat("\n--- Logistic Regression Performance ---\n")
+# Show Accuracy, Precision, Recall, F1
+confusionMatrix(pred_glm, test_data$loan_paid_back, mode = "prec_recall")
+
+# --- Method B: Decision Tree ---
+# Why: Non-linear and easy to visualize. Handles mixed data types well.
+model_tree <- rpart(loan_paid_back ~ ., data = train_data, method = "class")
+
+# Plot the Tree (Look for this in your 'Plots' tab in RStudio)
+rpart.plot(model_tree, main = "Decision Tree for Loan Default")
+
+# Predict
+pred_tree <- predict(model_tree, test_data, type = "class")
+
+cat("\n--- Decision Tree Performance ---\n")
+cm_tree <- confusionMatrix(pred_tree, test_data$loan_paid_back, mode = "prec_recall")
+print(cm_tree)
+
+# ==============================================================================
+# 5. CLUSTERING (Customer Segmentation)
+# ==============================================================================
+
+# Graph 4: The "Danger Zone" Scatter Plot (Defaults Only)
+# Filter the data to get only Defaulters
+df_defaults_only <- df %>% filter(loan_paid_back == "Default")
+
+ggplot(df_defaults_only, aes(x = annual_income, y = loan_amount)) +
+  # Set color manually to Red since we only have one group now
+  geom_point(color = "#E74C3C", alpha = 0.5, size = 1.5) + 
+  scale_x_continuous(labels = dollar_format()) + 
+  scale_y_continuous(labels = dollar_format()) +
+  labs(title = "Loan Status by Income & Loan Amount (Defaults Only)",
+       subtitle = "Visualizing the 'Danger Zone'",
+       x = "Annual Income",
+       y = "Loan Amount") +
+  theme_minimal()
+
+# Prepare Data: Income vs Loan Amount
+df_cluster_2var <- df %>% 
+  select(annual_income, loan_amount) %>%
+  scale()
+
+# --- Method A: CLARA (Robust Clustering) ---
+set.seed(123)
+clara_result <- clara(df_cluster_2var, k = 4, samples = 50, pamLike = TRUE)
+
+# Visualize Clusters
+fviz_cluster(clara_result, 
+             data = df_cluster_2var,
+             geom = "point",
+             ellipse.type = "convex",
+             ggtheme = theme_minimal(),
+             main = "Customer Segments (CLARA)")
+
+# Interpret Clusters (Real Dollar Values)
+df$clara_cluster <- clara_result$clustering
+cat("\n--- CLARA Cluster Profiles (Median Values) ---\n")
+print(aggregate(cbind(annual_income, loan_amount) ~ clara_cluster, data = df, FUN = median))
+
+# --- Method B: K-Means (Standard Clustering) ---
+# ==============================================================================
+# CLUSTERING: Credit Score (X) vs. Interest Rate (Y)
+# ==============================================================================
+# GOAL: Check "Risk-Based Pricing". Does High Score = Low Rate?
+
+# 1. Select & Scale Data
+df_cluster_rate <- df %>% 
+  select(credit_score, interest_rate) %>%
+  scale()
+
+# 2. Run K-Means (k=3)
+# We expect to see diagonal bands (High Score/Low Rate vs Low Score/High Rate)
+set.seed(123)
+kmeans_rate <- kmeans(df_cluster_rate, centers = 3, nstart = 25)
+
+# 3. Prepare Plotting Data
+df_plot_rate <- df %>%
+  select(credit_score, interest_rate) %>%
+  mutate(Cluster = as.factor(kmeans_rate$cluster))
+
+# 4. Visualize
+ggplot(df_plot_rate, aes(x = credit_score, y = interest_rate, color = Cluster)) +
+  geom_point(alpha = 0.6) +
+  
+  # Format Y-axis as percentage (e.g., 10%)
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  
+  labs(title = "Risk-Based Pricing Segments",
+       subtitle = "Credit Score vs. Interest Rate (K-Means k=3)",
+       x = "Credit Score (Higher is Better)",
+       y = "Interest Rate (Lower is Better)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# 5. Interpret Centers
+cat("\n--- Cluster Centers (Score vs Rate) ---\n")
+print(aggregate(cbind(credit_score, interest_rate) ~ Cluster, data = df_plot_rate, FUN = mean))
+
+# ==============================================================================
+# 6. ASSOCIATION RULE MINING (Cluster-Based Bins)
+# ==============================================================================
+
+# Custom Binning based on Clustering Results
+df_arules <- df %>%
+  mutate(
+    # 1. Income: Using your CLARA findings (< 37k, 37k-78k, > 78k)
+    Income_Group = cut(annual_income, 
+                       breaks = c(-Inf, 37000, 78000, Inf), 
+                       labels = c("Low", "Medium", "High")),
+    
+    # 2. Credit Score: Using your K-Means centers (< 638, 638-715, > 715)
+    Credit_Group = cut(credit_score, 
+                       breaks = c(-Inf, 638, 715, Inf), 
+                       labels = c("Poor", "Fair", "Good")),
+    
+    # 3. DTI: We keep this automatic (frequency) as we didn't cluster on it
+    DTI_Group = discretize(debt_to_income_ratio, method = "frequency", 
+                           categories = 3, labels = c("Low_Risk", "Med_Risk", "High_Risk"))
+  ) %>%
+  select(education_level, employment_status, Income_Group, Credit_Group, DTI_Group, loan_paid_back)
+
+# --- Verify the New Counts ---
+# Check how many people fall into your new "Cluster-Based" categories
+cat("\n--- New Group Counts (Derived from Clustering) ---\n")
+cat("Income Groups:\n")
+print(table(df_arules$Income_Group))
+cat("\nCredit Groups:\n")
+print(table(df_arules$Credit_Group))
+
+# --- Run Rule Mining Again ---
+trans <- as(df_arules, "transactions")
+
+# 1. General Rules
+rules_general <- apriori(trans, parameter = list(supp = 0.1, conf = 0.5, minlen=2))
+cat("\n--- General Association Rules (New Bins) ---\n")
+inspect(head(sort(rules_general, by = "lift"), 5))
