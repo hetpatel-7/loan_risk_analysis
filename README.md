@@ -76,5 +76,5 @@ This project analyzes a dataset of **20,000 loan applicants** to solve a critica
 ---
 
 ## 📝 Author
-* **[Your Name]**
-* *Project created for [Course Name / Personal Portfolio]*
+* **Het Patel, Aamir Naveed**
+* *Project created for INFO 523 Data Mining*
