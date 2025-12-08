@@ -187,16 +187,30 @@ rules_general <- apriori(trans, parameter = list(supp = 0.1, conf = 0.5, minlen=
 cat("\n--- General Association Rules ---\n")
 inspect(head(sort(rules_general, by = "lift"), 5))
 
-# Example 2: Rules Specific to DEFAULTS
-# "What conditions strongly imply a Default?"
-# Corrected Rule Mining for Defaults
-rules_default <- apriori(trans, 
-                         parameter = list(supp = 0.01, conf = 0.1, minlen=2),
-                         appearance = list(default = "lhs", rhs = "loan_paid_back=Default"))
+# ==============================================================================
+# 3B. ALTERNATIVE: ECLAT ALGORITHM (Focusing on PAID Loans)
+# ==============================================================================
+# Goal: Find the "Golden Rules" - who are the safest borrowers?
 
-cat("\n--- Rules Predicting Default ---\n")
-inspect(head(sort(rules_default, by = "lift"), 5))
+cat("\n--- Running Eclat Algorithm (Target: Paid) ---\n")
 
+# Step 1: Find Frequent Itemsets (DFS Search)
+# We use support = 0.05 because 'Paid' is very common (80% of data),
+# so we look for patterns that happen in at least 5% of cases.
+itemsets_eclat <- eclat(trans, parameter = list(supp = 0.05, minlen=2))
+
+# Step 2: Induce Rules from Itemsets
+# We look for high confidence (e.g., > 80% chance of paying back)
+rules_eclat <- ruleInduction(itemsets_eclat, trans, confidence = 0.8)
+
+# Step 3: Filter for 'Paid' Rules only
+# CHANGE HERE: We look for rules where RHS is 'Paid'
+rules_eclat_paid <- subset(rules_eclat, rhs %in% "loan_paid_back=Paid")
+
+# Step 4: Inspect Results
+cat("\n--- Top Rules Predicting 'Paid' (Safe Borrowers) ---\n")
+# We sort by 'lift' to find the strongest positive associations
+inspect(head(sort(rules_eclat_paid, by = "lift"), 5))
 # ==============================================================================
 # 4. CLASSIFICATION (Predicting Loan Status)
 # ==============================================================================
@@ -356,3 +370,29 @@ trans <- as(df_arules, "transactions")
 rules_general <- apriori(trans, parameter = list(supp = 0.1, conf = 0.5, minlen=2))
 cat("\n--- General Association Rules (New Bins) ---\n")
 inspect(head(sort(rules_general, by = "lift"), 5))
+
+# ==============================================================================
+# 6B. CLUSTER-BASED ECLAT (Target: PAID)
+# ==============================================================================
+# Goal: Use Eclat on our smart cluster bins to find the "Safe Borrower" profiles.
+
+cat("\n--- Running Eclat on Cluster-Based Data (Target: Paid) ---\n")
+
+# Step 1: Find Frequent Itemsets
+# We use a higher support (5%) because 'Paid' is the majority class (80% of data).
+# If we used 1%, we would get thousands of obvious rules.
+itemsets_cluster_paid <- eclat(trans, parameter = list(supp = 0.05, minlen=2))
+
+# Step 2: Induce Rules
+# We look for VERY high confidence (> 90%). 
+# We want to know: "Who is 90%+ likely to pay back?"
+rules_cluster_paid <- ruleInduction(itemsets_cluster_paid, trans, confidence = 0.9)
+
+# Step 3: Filter for 'Paid'
+# We specifically look for the "Good" outcome
+rules_cluster_paid_target <- subset(rules_cluster_paid, rhs %in% "loan_paid_back=Paid")
+
+# Step 4: Inspect the Best Rules
+cat("\n--- Top Cluster-Based 'Paid' Rules ---\n")
+# Sorting by lift helps us see the strongest associations first
+inspect(head(sort(rules_cluster_paid_target, by = "lift"), 5))
